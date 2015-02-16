@@ -5,6 +5,8 @@ IPv4 is supported
 
 # Building:
 
+you'll need to install the kernel-devel rpm 
+
    $ make clean all
 
 
