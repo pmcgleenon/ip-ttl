@@ -87,7 +87,7 @@ unsigned int nf_hook_func(
     struct iphdr* iph   = NULL;
     struct tcphdr* tcph = NULL;
 
-    if ( !skb || skb->protocol != htons(ETH_P_IP) || !skb->sk ) {
+    if ( !skb || skb->protocol != htons(ETH_P_IP)) {
         return NF_ACCEPT;
     }
 
