@@ -3,6 +3,10 @@
 ttl is a linux netfilter kernel module that rewrites the IP Time to Live field.   Currently only
 IPv4 is supported
 
+# download
+
+  $ git clone https://github.com/pmcgleenon/ip-ttl
+
 # Building:
 
 you'll need to install the kernel-devel rpm 

@@ -17,6 +17,7 @@
    under the License.
 */
 
+#include <linux/version.h>
 #include <linux/kernel.h>
 #include <linux/socket.h>
 #include <linux/tcp.h>
@@ -78,7 +79,11 @@ void do_checksum(struct sk_buff* skb) {
 
 
 unsigned int nf_hook_func(
-		unsigned int hooknum, 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0) 
+                unsigned int hooknum,
+#else
+                const struct nf_hook_ops *ops,
+#endif
 		struct sk_buff *skb, 
 		const struct net_device *in, 
 		const struct net_device *out, 
@@ -111,10 +116,10 @@ unsigned int nf_hook_func(
             do_checksum(skb); 
 			
 	    if (debug_enabled) {
-                pr_info("%s: %u.%u.%u.%u:%d -> %u.%u.%u.%u:%d ttl %d len %d", 
+                pr_info("%s: %pI4:%d -> %pI4:%d ttl %d len %d", 
 		        mod_name,
-			NIPQUAD(iph->saddr), ntohs(tcph->source), 
-			NIPQUAD(iph->daddr), ntohs(tcph->dest), 
+			&iph->saddr, ntohs(tcph->source), 
+			&iph->daddr, ntohs(tcph->dest), 
 			iph->ttl,
 			(skb->len - iph->ihl*4));
             }
