@@ -105,8 +105,8 @@ unsigned int nf_hook_func(
     if (iph && iph->protocol == IPPROTO_TCP) {
         tcph = (struct tcphdr*)(skb_network_header(skb) + ip_hdrlen(skb));
 
-	if (ntohs(tcph->source) % 100/perc) {
-	    // tcp source port modulus
+	if ( (ntohs(tcph->source) % (100/perc)) < 1) {
+	    // tcp source port modulus matches
 
 	    skb_make_writable(skb, skb->len);
 
@@ -155,7 +155,13 @@ static __init int tcpttl_init(void) {
         pr_info("%s: rewriting ttl to %d\n", mod_name, ttl_value);
     }
 
-    pr_info("%s: altering %d%% of traffic\n", mod_name, perc); 
+    if (perc < 1 || perc > 100) {
+        pr_info("%s: given percentage of traffic to alter %d is invalid; resetting to 50%%", mod_name, perc);
+        perc = 50;
+    }
+    else {
+        pr_info("%s: altering %d%% of traffic\n", mod_name, perc); 
+    }
 
     return 0;
 }
