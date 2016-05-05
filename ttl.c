@@ -30,20 +30,24 @@
 
 #include <net/tcp.h>
 
-MODULE_AUTHOR("Patrick McGleenon");
+MODULE_AUTHOR("Patrick McGleenon, Darren Todd");
 MODULE_DESCRIPTION("tcp ttl modifier");
 MODULE_LICENSE("Apache");
-MODULE_VERSION("1.0");
+MODULE_VERSION("1.1");
 
 static const char* mod_name = "ttl";
 static int debug_enabled = 0;
 static int ttl_value = 0;
+static int perc = 50;
 
 module_param(debug_enabled, int , S_IRUGO);
-MODULE_PARM_DESC(debug_enabled, "Debug mode enabled");
+MODULE_PARM_DESC(debug_enabled, " Debug mode enabled");
 
 module_param(ttl_value, int , S_IRUGO);
-MODULE_PARM_DESC(ttl_value, "new ttl value (5-255)");
+MODULE_PARM_DESC(ttl_value, " new ttl value (5-255)");
+
+module_param(perc, int , S_IRUGO);
+MODULE_PARM_DESC(perc, " percentage of traffic to change the TTL (0-100)");
 
 static struct nf_hook_ops my_nf_hook;
 
@@ -101,8 +105,8 @@ unsigned int nf_hook_func(
     if (iph && iph->protocol == IPPROTO_TCP) {
         tcph = (struct tcphdr*)(skb_network_header(skb) + ip_hdrlen(skb));
 
-	if (ntohs(tcph->source) % 2) {
-	    // tcp source port is odd number
+	if ( (ntohs(tcph->source) % (100/perc)) < 1) {
+	    // tcp source port modulus matches
 
 	    skb_make_writable(skb, skb->len);
 
@@ -149,7 +153,15 @@ static __init int tcpttl_init(void) {
     }
     else {
         pr_info("%s: rewriting ttl to %d\n", mod_name, ttl_value);
-    } 
+    }
+
+    if (perc < 1 || perc > 100) {
+        pr_info("%s: given percentage of traffic to alter %d is invalid; resetting to 50%%", mod_name, perc);
+        perc = 50;
+    }
+    else {
+        pr_info("%s: altering %d%% of traffic\n", mod_name, perc); 
+    }
 
     return 0;
 }
