@@ -21,7 +21,7 @@
 #include <linux/kernel.h>
 #include <linux/socket.h>
 #include <linux/tcp.h>
-#include <linux/proc_fs.h>
+#include <linux/udp.h>
 #include <linux/module.h>
 #include <net/net_namespace.h>
 #include <linux/netfilter.h>
@@ -31,14 +31,14 @@
 #include <net/tcp.h>
 
 MODULE_AUTHOR("Patrick McGleenon, Darren Todd");
-MODULE_DESCRIPTION("tcp ttl modifier");
+MODULE_DESCRIPTION("ttl modifier");
 MODULE_LICENSE("Apache");
 MODULE_VERSION("1.1");
 
 static const char* mod_name = "ttl";
 static int debug_enabled = 0;
 static int ttl_value = 0;
-static int perc = 50;
+static int perc = 100;
 
 module_param(debug_enabled, int , S_IRUGO);
 MODULE_PARM_DESC(debug_enabled, " Debug mode enabled");
@@ -49,9 +49,7 @@ MODULE_PARM_DESC(ttl_value, " new ttl value (5-255)");
 module_param(perc, int , S_IRUGO);
 MODULE_PARM_DESC(perc, " percentage of traffic to change the TTL (0-100)");
 
-static struct nf_hook_ops my_nf_hook;
-
-void do_checksum(struct sk_buff* skb) {
+void do_tcp_checksum(struct sk_buff* skb) {
     struct iphdr *iph = NULL;
     struct tcphdr *th = NULL;
     int datalen = 0;
@@ -66,12 +64,13 @@ void do_checksum(struct sk_buff* skb) {
     }
 
     iph = (struct iphdr*)skb_network_header(skb);
-    th = (struct tcphdr*)(skb_network_header(skb) + ip_hdrlen(skb));
-
     datalen = skb->len - iph->ihl*4;
 
-    th->check = 0;
-    th->check = ~tcp_v4_check(datalen, iph->saddr, iph->daddr, 0);
+    if (iph->protocol == IPPROTO_TCP) {
+        th = (struct tcphdr*)(skb_network_header(skb) + ip_hdrlen(skb));
+        th->check = 0;
+        th->check = ~tcp_v4_check(datalen, iph->saddr, iph->daddr, 0);
+    }
 
     skb->csum_start = skb_transport_header(skb) - skb->head;
 
@@ -81,8 +80,50 @@ void do_checksum(struct sk_buff* skb) {
     ip_send_check(ip_hdr(skb));
 }
 
+void do_udp_checksum(struct sk_buff* skb) {
+    struct iphdr *iph = NULL;
+    struct udphdr *uh = NULL;
+    int datalen = 0;
 
-unsigned int nf_hook_func(
+    if (skb_is_nonlinear(skb)) {
+        pr_info("%s: NON-LINEAR skb - will attempt to LINEARIZE\n", mod_name);
+
+        if (skb_linearize(skb) != 0) {
+            pr_info("%s: FAILED TO LINEARIZE skb\n", mod_name);
+            return;
+        }
+    }
+
+    iph = (struct iphdr*) skb_network_header(skb);
+    datalen = skb->len - iph->ihl*4;
+
+    if (iph->protocol == IPPROTO_UDP) {
+        uh = (struct udphdr*)(skb_network_header(skb) + ip_hdrlen(skb));
+        uh->check = 0;
+
+        uh->check = csum_tcpudp_magic(iph->saddr,
+                                  iph->daddr,
+                                  datalen,
+                                  IPPROTO_UDP,
+                                  csum_partial((unsigned char *)uh,
+                                               datalen,
+                                               0));
+/*
+        uh->check = ~csum_tcpudp_magic(iph->saddr, iph->daddr,
+                            datalen, IPPROTO_UDP, 0);
+        if (!uh->check) uh->check = CSUM_MANGLED_0;
+*/
+    }
+
+    skb->csum_start = skb_transport_header(skb) - skb->head;
+
+    skb->csum_offset = offsetof(struct tcphdr, check);
+    skb->ip_summed = CHECKSUM_UNNECESSARY;
+
+    ip_send_check(ip_hdr(skb));
+}
+
+static unsigned int nf_hook_func(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0) 
                 unsigned int hooknum,
 #else
@@ -91,41 +132,74 @@ unsigned int nf_hook_func(
 		struct sk_buff *skb, 
 		const struct net_device *in, 
 		const struct net_device *out, 
+#if defined(RHEL7_2)
+        	const struct nf_hook_state *state) {
+#else
 		int (*okfn)(struct sk_buff *)) {
+#endif
 
-    struct iphdr* iph   = NULL;
+    struct iphdr*  iph  = NULL;
     struct tcphdr* tcph = NULL;
+    struct udphdr* udph = NULL;
 
     if ( !skb || skb->protocol != htons(ETH_P_IP)) {
         return NF_ACCEPT;
     }
 
     iph = ip_hdr(skb);
+    if (!iph)  {
+        return NF_ACCEPT;
+    }
 
-    if (iph && iph->protocol == IPPROTO_TCP) {
+    if (iph->protocol == IPPROTO_TCP) {
         tcph = (struct tcphdr*)(skb_network_header(skb) + ip_hdrlen(skb));
 
-	if ( (ntohs(tcph->source) % (100/perc)) < 1) {
-	    // tcp source port modulus matches
+	    if ( (ntohs(tcph->source) % (100/perc)) < 1) {
+	        // source port modulus matches
 
-	    skb_make_writable(skb, skb->len);
+	        skb_make_writable(skb, skb->len);
+                if (ttl_value) {
+                    iph->ttl = ttl_value; 
+                }
+	        else {
+                    iph->ttl -= 1;
+                }
 
-            if (ttl_value) {
-                iph->ttl = ttl_value; 
-            }
-            else {
-                iph->ttl -= 1; 
-            }
-
-            do_checksum(skb); 
+                do_tcp_checksum(skb); 
 			
-	    if (debug_enabled) {
-                pr_info("%s: %pI4:%d -> %pI4:%d ttl %d len %d", 
+	        if (debug_enabled) {
+                    pr_info("%s: TCP %pI4:%d -> %pI4:%d ttl %d len %d", 
 		        mod_name,
-			&iph->saddr, ntohs(tcph->source), 
-			&iph->daddr, ntohs(tcph->dest), 
-			iph->ttl,
-			(skb->len - iph->ihl*4));
+		    	&iph->saddr, ntohs(tcph->source), 
+	    		&iph->daddr, ntohs(tcph->dest), 
+    			iph->ttl,
+    			(skb->len - iph->ihl*4));
+            }
+        }
+    }
+    else if (iph->protocol == IPPROTO_UDP) {
+        udph = (struct udphdr*)(skb_network_header(skb) + ip_hdrlen(skb));
+
+        if ( (ntohs(udph->source) % (100/perc)) < 1) { 
+            // source port modulus matches
+
+            skb_make_writable(skb, skb->len);
+            if (ttl_value) {
+                iph->ttl = ttl_value;
+            }
+	    else {
+                iph->ttl -= 1;
+            }
+
+            do_udp_checksum(skb); 
+
+            if (debug_enabled) {
+                pr_info("%s: UDP %pI4:%d -> %pI4:%d ttl %d len %d",
+                mod_name,
+                &iph->saddr, ntohs(udph->source),
+                &iph->daddr, ntohs(udph->dest),
+                iph->ttl,
+                (skb->len - iph->ihl*4));
             }
         }
     }
@@ -133,12 +207,18 @@ unsigned int nf_hook_func(
     return NF_ACCEPT; 
 }
 
+static struct nf_hook_ops ipv4_ttl_ops[] __read_mostly = {
+    {
+        .hook           = nf_hook_func,
+        .owner          = THIS_MODULE,
+        .pf             = NFPROTO_IPV4,
+        .hooknum        = NF_INET_POST_ROUTING,
+        .priority       = NF_IP_PRI_LAST,
+    },
+};
+
 static __init int tcpttl_init(void) {
-    my_nf_hook.hook = nf_hook_func;
-    my_nf_hook.hooknum = NF_INET_POST_ROUTING;
-    my_nf_hook.pf = PF_INET;
-    my_nf_hook.priority = NF_IP_PRI_LAST;
-    nf_register_hook(&my_nf_hook);
+    nf_register_hooks(ipv4_ttl_ops, ARRAY_SIZE(ipv4_ttl_ops));
 
     if (debug_enabled) {
         pr_info("%s: loaded (debug)\n", mod_name);
@@ -169,7 +249,7 @@ static __init int tcpttl_init(void) {
 module_init(tcpttl_init);
 
 static __exit void tcpttl_exit(void) {
-    nf_unregister_hook(&my_nf_hook);
+    nf_unregister_hooks(ipv4_ttl_ops, ARRAY_SIZE(ipv4_ttl_ops));
 
     pr_info("%s: unloaded\n", mod_name);
 }
