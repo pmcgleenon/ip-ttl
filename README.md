@@ -1,7 +1,7 @@
 # ip-ttl
 
 ttl is a linux netfilter kernel module that rewrites the IP Time To Live (TTL) field.
-Currently only IPv4 is supported. The IP packets that are altered are selected based on the
+Currently only IPv4 is supported. The TCP/UDP IP packets that are altered are selected based on the
 source port - with the percentage of traffic configurable - default is 50% of traffic.
 
 # Download:

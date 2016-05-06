@@ -33,12 +33,12 @@
 MODULE_AUTHOR("Patrick McGleenon, Darren Todd");
 MODULE_DESCRIPTION("ttl modifier");
 MODULE_LICENSE("Apache");
-MODULE_VERSION("1.1");
+MODULE_VERSION("1.2");
 
 static const char* mod_name = "ttl";
 static int debug_enabled = 0;
 static int ttl_value = 0;
-static int perc = 100;
+static int perc = 50;
 
 module_param(debug_enabled, int , S_IRUGO);
 MODULE_PARM_DESC(debug_enabled, " Debug mode enabled");
