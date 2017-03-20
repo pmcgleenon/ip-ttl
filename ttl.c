@@ -27,18 +27,24 @@
 #include <linux/netfilter.h>
 #include <linux/netfilter_ipv4.h>
 #include <net/tcp.h>
-
 #include <net/tcp.h>
 
 MODULE_AUTHOR("Patrick McGleenon, Darren Todd");
-MODULE_DESCRIPTION("ttl modifier");
-MODULE_LICENSE("Apache");
-MODULE_VERSION("1.2");
+MODULE_DESCRIPTION("ttl/ecn modifier");
+MODULE_LICENSE("GPL");
+MODULE_VERSION("1.3");
+
+static const int ECN_IP_MASK = 3;
+static const int ECN_NOT_ECT = 0;
+static const int ECN_ECT_1 = 1;
+static const int ECN_ECT_0 = 2;
+static const int ECN_CE = 3;
 
 static const char* mod_name = "ttl";
 static int debug_enabled = 0;
 static int ttl_value = 0;
-static int perc = 50;
+static int perc = 100;
+static int ecn_enabled = 0;
 
 module_param(debug_enabled, int , S_IRUGO);
 MODULE_PARM_DESC(debug_enabled, " Debug mode enabled");
@@ -47,7 +53,10 @@ module_param(ttl_value, int , S_IRUGO);
 MODULE_PARM_DESC(ttl_value, " new ttl value (5-255)");
 
 module_param(perc, int , S_IRUGO);
-MODULE_PARM_DESC(perc, " percentage of traffic to change the TTL (0-100)");
+MODULE_PARM_DESC(perc, " percentage of traffic to change the TTL/ECN (0-100)");
+
+module_param(ecn_enabled, int , S_IRUGO);
+MODULE_PARM_DESC(ecn_enabled, " Rewrite ECN IP hdr bits");
 
 void do_tcp_checksum(struct sk_buff* skb) {
     struct iphdr *iph = NULL;
@@ -55,8 +64,6 @@ void do_tcp_checksum(struct sk_buff* skb) {
     int datalen = 0;
 
     if (skb_is_nonlinear(skb)) {
-        pr_info("%s: NON-LINEAR skb - will attempt to LINEARIZE\n", mod_name);
-
         if (skb_linearize(skb) != 0) {
             pr_info("%s: FAILED TO LINEARIZE skb\n", mod_name);
             return;
@@ -86,8 +93,6 @@ void do_udp_checksum(struct sk_buff* skb) {
     int datalen = 0;
 
     if (skb_is_nonlinear(skb)) {
-        pr_info("%s: NON-LINEAR skb - will attempt to LINEARIZE\n", mod_name);
-
         if (skb_linearize(skb) != 0) {
             pr_info("%s: FAILED TO LINEARIZE skb\n", mod_name);
             return;
@@ -108,11 +113,6 @@ void do_udp_checksum(struct sk_buff* skb) {
                                   csum_partial((unsigned char *)uh,
                                                datalen,
                                                0));
-/*
-        uh->check = ~csum_tcpudp_magic(iph->saddr, iph->daddr,
-                            datalen, IPPROTO_UDP, 0);
-        if (!uh->check) uh->check = CSUM_MANGLED_0;
-*/
     }
 
     skb->csum_start = skb_transport_header(skb) - skb->head;
@@ -123,7 +123,52 @@ void do_udp_checksum(struct sk_buff* skb) {
     ip_send_check(ip_hdr(skb));
 }
 
-static unsigned int nf_hook_func(
+void set_ecn_congested(struct iphdr* iph) {
+    if (ecn_enabled) {
+        __u8 oldtos;
+
+        oldtos = iph->tos;
+        iph->tos &= ~ECN_IP_MASK;
+        iph->tos |= (ECN_CE & ECN_IP_MASK);
+        csum_replace2(&iph->check, htons(oldtos), htons(iph->tos));
+    }
+}
+
+void set_ecn_congested_ipv6(struct sk_buff* skb) {
+    if (ecn_enabled) {
+        ipv6_change_dsfield(ipv6_hdr(skb), ECN_IP_MASK, ECN_CE);
+    }
+}
+
+void set_ecn_not_congested(struct iphdr* iph, u16 sport) {
+    if (ecn_enabled) {
+
+        int ecn_not_congested = ((htons(sport) % 3) & ECN_IP_MASK);
+        __u8 oldtos;
+
+        oldtos = iph->tos;
+        iph->tos &= ~ECN_IP_MASK;
+        iph->tos |= (ecn_not_congested & ECN_IP_MASK);
+        csum_replace2(&iph->check, htons(oldtos), htons(iph->tos));
+
+/*
+	if (debug_enabled) {
+           pr_info("%s: ECN port %d ecn_not_congested %d", 
+		        mod_name,
+		    	ntohs(sport), 
+    			ecn_not_congested);
+        }
+*/
+    }
+}
+
+void set_ecn_not_congested_ipv6(struct sk_buff* skb, u16 sport) {
+    if (ecn_enabled) {
+        ipv6_change_dsfield(ipv6_hdr(skb), ECN_IP_MASK, ECN_ECT_1);
+    }
+}
+
+static unsigned int nf_ipv4_postrouting_hook(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0) 
                 unsigned int hooknum,
 #else
@@ -138,9 +183,8 @@ static unsigned int nf_hook_func(
 		int (*okfn)(struct sk_buff *)) {
 #endif
 
+
     struct iphdr*  iph  = NULL;
-    struct tcphdr* tcph = NULL;
-    struct udphdr* udph = NULL;
 
     if ( !skb || skb->protocol != htons(ETH_P_IP)) {
         return NF_ACCEPT;
@@ -151,20 +195,21 @@ static unsigned int nf_hook_func(
         return NF_ACCEPT;
     }
 
+    if (!skb_make_writable(skb, sizeof(struct iphdr))) {
+        return NF_ACCEPT;
+    }
+
     if (iph->protocol == IPPROTO_TCP) {
+        struct tcphdr* tcph = NULL;
         tcph = (struct tcphdr*)(skb_network_header(skb) + ip_hdrlen(skb));
 
-	    if ( (ntohs(tcph->source) % (100/perc)) < 1) {
-	        // source port modulus matches
+	if ( (ntohs(tcph->source) % (100/perc)) < 1) {
+	    // source port modulus matches
 
-	        skb_make_writable(skb, skb->len);
-                if (ttl_value) {
-                    iph->ttl = ttl_value; 
-                }
-	        else {
-                    iph->ttl -= 1;
-                }
+            set_ecn_congested(iph);
 
+            if (ttl_value) {
+                iph->ttl = ttl_value; 
                 do_tcp_checksum(skb); 
 			
 	        if (debug_enabled) {
@@ -174,42 +219,136 @@ static unsigned int nf_hook_func(
 	    		&iph->daddr, ntohs(tcph->dest), 
     			iph->ttl,
     			(skb->len - iph->ihl*4));
+                }     
             }
+        } else {
+            set_ecn_not_congested(iph, tcph->source);
         }
     }
+
     else if (iph->protocol == IPPROTO_UDP) {
+        struct udphdr* udph = NULL;
         udph = (struct udphdr*)(skb_network_header(skb) + ip_hdrlen(skb));
 
         if ( (ntohs(udph->source) % (100/perc)) < 1) { 
             // source port modulus matches
 
-            skb_make_writable(skb, skb->len);
+            set_ecn_congested(iph);
+
             if (ttl_value) {
                 iph->ttl = ttl_value;
-            }
-	    else {
-                iph->ttl -= 1;
-            }
+                do_udp_checksum(skb); 
 
-            do_udp_checksum(skb); 
-
-            if (debug_enabled) {
-                pr_info("%s: UDP %pI4:%d -> %pI4:%d ttl %d len %d",
-                mod_name,
-                &iph->saddr, ntohs(udph->source),
-                &iph->daddr, ntohs(udph->dest),
-                iph->ttl,
-                (skb->len - iph->ihl*4));
+                if (debug_enabled) {
+                    pr_info("%s: UDP %pI4:%d -> %pI4:%d ttl %d len %d",
+                    mod_name,
+                    &iph->saddr, ntohs(udph->source),
+                    &iph->daddr, ntohs(udph->dest),
+                    iph->ttl,
+                    (skb->len - iph->ihl*4));
+                }
             }
+        } else {
+            set_ecn_not_congested(iph, udph->source);
         }
     }
 
     return NF_ACCEPT; 
 }
 
+
+static unsigned int nf_ipv6_postrouting_hook(
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
+                unsigned int hooknum,
+#else
+                const struct nf_hook_ops *ops,
+#endif
+                struct sk_buff *skb,
+                const struct net_device *in,
+                const struct net_device *out,
+#if defined(RHEL7_2)
+                const struct nf_hook_state *state) {
+#else
+                int (*okfn)(struct sk_buff *)) {
+#endif
+
+    struct ipv6hdr* ip6h  = NULL;
+
+    if ( !skb ) {
+        return NF_ACCEPT;
+    }
+
+    ip6h = ipv6_hdr(skb);
+    if (!ip6h)  {
+        return NF_ACCEPT;
+    }
+
+    if (!skb_make_writable(skb, sizeof(struct iphdr))) {
+        return NF_ACCEPT;
+    }
+
+    if (ip6h->nexthdr  == IPPROTO_TCP) {
+        struct tcphdr* tcph = tcp_hdr(skb);
+
+        if ( (ntohs(tcph->source) % (100/perc)) < 1) {
+            // source port modulus matches
+
+            set_ecn_congested_ipv6(skb);
+
+/*
+            if (ttl_value) {
+                ip6h->hop_limit = ttl_value;
+                do_tcp_checksum(skb);
+
+                if (debug_enabled) {
+                    pr_info("%s: TCP %pI6:%d -> %pI6:%d ttl %d len %d",
+                        mod_name,
+                        &ip6h->saddr, ntohs(tcph->source),
+                        &ip6h->daddr, ntohs(tcph->dest),
+                        ip6h->hop_limit,
+	                ntohs(ip6h->payload_len));
+                }
+            }
+*/
+        } else {
+            set_ecn_not_congested_ipv6(skb, tcph->source);
+        }
+    }
+
+    else if (ip6h->nexthdr == IPPROTO_UDP) {
+        struct udphdr* udph = udp_hdr(skb);
+
+        if ( (ntohs(udph->source) % (100/perc)) < 1) {
+            // source port modulus matches
+
+            set_ecn_congested_ipv6(skb);
+
+/*
+            if (ttl_value) {
+                ip6h->hop_limit = ttl_value;
+                do_udp_checksum(skb);
+
+                if (debug_enabled) {
+                    pr_info("%s: UDP %pI4:%d -> %pI4:%d ttl %d len %d",
+                    mod_name,
+                    &ip6h->saddr, ntohs(udph->source),
+                    &ip6h->daddr, ntohs(udph->dest),
+                    ip6h->hop_limit,
+	            ntohs(ip6h->payload_len));
+                }
+            }
+*/
+        } else {
+            set_ecn_not_congested_ipv6(skb, udph->source);
+        }
+    }
+
+    return NF_ACCEPT;
+}
+
 static struct nf_hook_ops ipv4_ttl_ops[] __read_mostly = {
     {
-        .hook           = nf_hook_func,
+        .hook           = nf_ipv4_postrouting_hook,
         .owner          = THIS_MODULE,
         .pf             = NFPROTO_IPV4,
         .hooknum        = NF_INET_POST_ROUTING,
@@ -217,21 +356,30 @@ static struct nf_hook_ops ipv4_ttl_ops[] __read_mostly = {
     },
 };
 
+static struct nf_hook_ops ipv6_ttl_ops[] __read_mostly = {
+    {
+        .hook           = nf_ipv6_postrouting_hook,
+        .owner          = THIS_MODULE,
+        .pf             = NFPROTO_IPV6,
+        .hooknum        = NF_INET_POST_ROUTING,
+        .priority       = NF_IP_PRI_LAST,
+    },
+};
+
+
+
 static __init int tcpttl_init(void) {
     nf_register_hooks(ipv4_ttl_ops, ARRAY_SIZE(ipv4_ttl_ops));
+    nf_register_hooks(ipv6_ttl_ops, ARRAY_SIZE(ipv6_ttl_ops));
 
     if (debug_enabled) {
-        pr_info("%s: loaded (debug)\n", mod_name);
+        pr_info("%s: loaded (debug) ecn_enabled[%d]\n", mod_name, ecn_enabled);
     }
     else {
-        pr_info("%s: loaded\n", mod_name);
+        pr_info("%s: loaded ecn_enabled[%d]\n", mod_name, ecn_enabled);
     }
 
-    if (ttl_value < 5 || ttl_value > 255) {
-        pr_info("%s: rewriting ttl to (ttl - 1)\n", mod_name);
-        ttl_value = 0;
-    }
-    else {
+    if (ttl_value > 5 && ttl_value < 255) {
         pr_info("%s: rewriting ttl to %d\n", mod_name, ttl_value);
     }
 
@@ -250,6 +398,7 @@ module_init(tcpttl_init);
 
 static __exit void tcpttl_exit(void) {
     nf_unregister_hooks(ipv4_ttl_ops, ARRAY_SIZE(ipv4_ttl_ops));
+    nf_unregister_hooks(ipv6_ttl_ops, ARRAY_SIZE(ipv6_ttl_ops));
 
     pr_info("%s: unloaded\n", mod_name);
 }
