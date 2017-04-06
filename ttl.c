@@ -150,21 +150,13 @@ void set_ecn_not_congested(struct iphdr* iph, u16 sport) {
         iph->tos &= ~ECN_IP_MASK;
         iph->tos |= (ecn_not_congested & ECN_IP_MASK);
         csum_replace2(&iph->check, htons(oldtos), htons(iph->tos));
-
-/*
-	if (debug_enabled) {
-           pr_info("%s: ECN port %d ecn_not_congested %d", 
-		        mod_name,
-		    	ntohs(sport), 
-    			ecn_not_congested);
-        }
-*/
     }
 }
 
 void set_ecn_not_congested_ipv6(struct sk_buff* skb, u16 sport) {
     if (ecn_enabled) {
-        ipv6_change_dsfield(ipv6_hdr(skb), ECN_IP_MASK, ECN_ECT_1);
+        int ecn_not_congested = ((htons(sport) % 3) & ECN_IP_MASK);
+        ipv6_change_dsfield(ipv6_hdr(skb), ECN_IP_MASK, ecn_not_congested);
     }
 }
 
@@ -200,8 +192,7 @@ static unsigned int nf_ipv4_postrouting_hook(
     }
 
     if (iph->protocol == IPPROTO_TCP) {
-        struct tcphdr* tcph = NULL;
-        tcph = (struct tcphdr*)(skb_network_header(skb) + ip_hdrlen(skb));
+        struct tcphdr* tcph = tcp_hdr(skb);
 
 	if ( (ntohs(tcph->source) % (100/perc)) < 1) {
 	    // source port modulus matches
@@ -227,8 +218,7 @@ static unsigned int nf_ipv4_postrouting_hook(
     }
 
     else if (iph->protocol == IPPROTO_UDP) {
-        struct udphdr* udph = NULL;
-        udph = (struct udphdr*)(skb_network_header(skb) + ip_hdrlen(skb));
+        struct udphdr* udph = udp_hdr(skb);
 
         if ( (ntohs(udph->source) % (100/perc)) < 1) { 
             // source port modulus matches
