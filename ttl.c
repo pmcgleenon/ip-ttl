@@ -32,7 +32,7 @@
 MODULE_AUTHOR("Patrick McGleenon, Darren Todd");
 MODULE_DESCRIPTION("ttl/ecn modifier");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("1.3");
+MODULE_VERSION("1.4");
 
 static const int ECN_IP_MASK = 3;
 static const int ECN_NOT_ECT = 0;
@@ -45,6 +45,7 @@ static int debug_enabled = 0;
 static int ttl_value = 0;
 static int perc = 100;
 static int ecn_enabled = 0;
+static int filter_mode = 0;
 
 module_param(debug_enabled, int , S_IRUGO);
 MODULE_PARM_DESC(debug_enabled, " Debug mode enabled");
@@ -57,6 +58,9 @@ MODULE_PARM_DESC(perc, " percentage of traffic to change the TTL/ECN (0-100)");
 
 module_param(ecn_enabled, int , S_IRUGO);
 MODULE_PARM_DESC(ecn_enabled, " Rewrite ECN IP hdr bits");
+
+module_param(filter_mode, int , S_IRUGO);
+MODULE_PARM_DESC(filter_mode, "Behaviour is consistent on 0: Flow Affinity, 1: Source IP Affinity");
 
 void do_tcp_checksum(struct sk_buff* skb) {
     struct iphdr *iph = NULL;
@@ -160,6 +164,42 @@ void set_ecn_not_congested_ipv6(struct sk_buff* skb, u16 sport) {
     }
 }
 
+int matches_udp(struct udphdr* udph) {
+    return ( (ntohs(udph->source) % (100/perc)) < 1) ;
+}
+
+int matches_tcp(struct tcphdr* tcph) {
+    return ( (ntohs(tcph->source) % (100/perc)) < 1) ;
+}
+
+int matches_ipv4(struct iphdr* iph) {
+    return ( (ntohl(iph->saddr) % (100/perc)) < 1) ;
+}
+
+int matches_ipv6(struct ipv6hdr* ip6h) {
+    __be32 hash = ip6h->saddr.s6_addr32[0] ^
+                  ip6h->saddr.s6_addr32[1] ^
+                  ip6h->saddr.s6_addr32[2] ^
+                  ip6h->saddr.s6_addr32[3];
+    return ((ntohl(hash) % (100/perc)) < 1);
+}
+
+int matches_udp_v4_filter(struct udphdr* udph, struct iphdr* iph) {
+    return (filter_mode == 0) ? matches_udp(udph) :  matches_ipv4(iph);
+}
+
+int matches_tcp_v4_filter(struct tcphdr* tcph, struct iphdr* iph) {
+   return (filter_mode == 0) ? matches_tcp(tcph) :  matches_ipv4(iph);
+}
+
+int matches_udp_v6_filter(struct udphdr* udph, struct ipv6hdr* ip6h) {
+    return (filter_mode == 0) ? matches_udp(udph) :  matches_ipv6(ip6h);
+}
+
+int matches_tcp_v6_filter(struct tcphdr* tcph, struct ipv6hdr* ip6h) {
+    return (filter_mode == 0) ? matches_tcp(tcph) :  matches_ipv6(ip6h);
+}
+
 static unsigned int nf_ipv4_postrouting_hook(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0) 
                 unsigned int hooknum,
@@ -174,7 +214,6 @@ static unsigned int nf_ipv4_postrouting_hook(
 #else
 		int (*okfn)(struct sk_buff *)) {
 #endif
-
 
     struct iphdr*  iph  = NULL;
 
@@ -194,8 +233,8 @@ static unsigned int nf_ipv4_postrouting_hook(
     if (iph->protocol == IPPROTO_TCP) {
         struct tcphdr* tcph = tcp_hdr(skb);
 
-	if ( (ntohs(tcph->source) % (100/perc)) < 1) {
-	    // source port modulus matches
+	    if ( matches_tcp_v4_filter(tcph, iph) ) {
+	        // filter matches
 
             set_ecn_congested(iph);
 
@@ -220,8 +259,8 @@ static unsigned int nf_ipv4_postrouting_hook(
     else if (iph->protocol == IPPROTO_UDP) {
         struct udphdr* udph = udp_hdr(skb);
 
-        if ( (ntohs(udph->source) % (100/perc)) < 1) { 
-            // source port modulus matches
+        if ( matches_udp_v4_filter(udph, iph) ) { 
+            // filter matches
 
             set_ecn_congested(iph);
 
@@ -280,7 +319,7 @@ static unsigned int nf_ipv6_postrouting_hook(
     if (ip6h->nexthdr  == IPPROTO_TCP) {
         struct tcphdr* tcph = tcp_hdr(skb);
 
-        if ( (ntohs(tcph->source) % (100/perc)) < 1) {
+        if ( matches_tcp_v6_filter(tcph, ip6h)) {
             // source port modulus matches
 
             set_ecn_congested_ipv6(skb);
@@ -308,7 +347,7 @@ static unsigned int nf_ipv6_postrouting_hook(
     else if (ip6h->nexthdr == IPPROTO_UDP) {
         struct udphdr* udph = udp_hdr(skb);
 
-        if ( (ntohs(udph->source) % (100/perc)) < 1) {
+        if ( matches_udp_v6_filter(udph, ip6h)) {
             // source port modulus matches
 
             set_ecn_congested_ipv6(skb);
@@ -380,6 +419,12 @@ static __init int tcpttl_init(void) {
     else {
         pr_info("%s: altering %d%% of traffic\n", mod_name, perc); 
     }
+
+    if (filter_mode != 0 && filter_mode !=1) {
+        pr_info("%s: filter_mode can be either 0 (flow) or 1 (IP).  Invalid value: %d \n", mod_name, filter_mode); 
+        filter_mode = 0;
+    }
+    pr_info("%s: using filter_mode %d \n", mod_name, filter_mode); 
 
     return 0;
 }
