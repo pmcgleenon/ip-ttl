@@ -7,6 +7,9 @@ ifeq ($(RH_MAJVER),7)
   ifeq ($(RH_MINVER),2)
     EXTRA_CFLAGS += -DRHEL7_2 
   endif
+  ifeq ($(RH_MINVER),3)
+    EXTRA_CFLAGS += -DRHEL7_2 
+  endif
   ifeq ($(RH_MINVER),1)
     EXTRA_CFLAGS += -DRHEL7_1
   endif
