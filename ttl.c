@@ -165,15 +165,15 @@ void set_ecn_not_congested_ipv6(struct sk_buff* skb, u16 sport) {
 }
 
 int matches_udp(struct udphdr* udph) {
-    return ( (ntohs(udph->source) % (100/perc)) < 1) ;
+    return ( (ntohs(udph->source) % (100/(100-perc))) < 1) ;
 }
 
 int matches_tcp(struct tcphdr* tcph) {
-    return ( (ntohs(tcph->source) % (100/perc)) < 1) ;
+    return ( (ntohs(tcph->source) % (100/(100-perc))) < 1) ;
 }
 
 int matches_ipv4(struct iphdr* iph) {
-    return ( (ntohl(iph->saddr) % (100/perc)) < 1) ;
+    return ( (ntohl(iph->saddr) % (100/(100-perc))) < 1) ;
 }
 
 int matches_ipv6(struct ipv6hdr* ip6h) {
