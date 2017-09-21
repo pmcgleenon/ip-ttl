@@ -164,16 +164,27 @@ void set_ecn_not_congested_ipv6(struct sk_buff* skb, u16 sport) {
     }
 }
 
+int matches_value(uint32_t val, int perc) {
+
+    if (perc == 100) {
+        return 1;
+    } else if (perc == 0) {
+        return 0;
+    }
+
+    return ((val % (int)100/(perc)) == 0);
+}
+
 int matches_udp(struct udphdr* udph) {
-    return ( (ntohs(udph->source) % (100/(100-perc))) < 1) ;
+    return matches_value(ntohs(udph->source), perc);
 }
 
 int matches_tcp(struct tcphdr* tcph) {
-    return ( (ntohs(tcph->source) % (100/(100-perc))) < 1) ;
+    return ( matches_value(ntohs(tcph->source), perc)); 
 }
 
 int matches_ipv4(struct iphdr* iph) {
-    return ( (ntohl(iph->saddr) % (100/(100-perc))) < 1) ;
+    return ( matches_value(ntohl(iph->saddr), perc)); 
 }
 
 int matches_ipv6(struct ipv6hdr* ip6h) {
@@ -181,7 +192,7 @@ int matches_ipv6(struct ipv6hdr* ip6h) {
                   ip6h->saddr.s6_addr32[1] ^
                   ip6h->saddr.s6_addr32[2] ^
                   ip6h->saddr.s6_addr32[3];
-    return ((ntohl(hash) % (100/perc)) < 1);
+    return matches_value(ntohl(hash), perc);
 }
 
 int matches_udp_v4_filter(struct udphdr* udph, struct iphdr* iph) {
