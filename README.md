@@ -1,11 +1,8 @@
 # ip-ttl
 
 ttl is a linux netfilter kernel module that rewrites either of the:
+  - Diff Serv ECN field.
   - the IP Time To Live (TTL) field or 
-  - Diff Serv ECNi field.
-
-Currently only IPv4 is supported. The TCP/UDP IP packets that are altered are selected based on the
-source port - with the percentage of traffic configurable - default is 100% of traffic.
 
 # Download:
 
@@ -23,7 +20,9 @@ Parameters are described with modinfo ttl.ko:
 
     debug_enabled: Debug mode enabled (int)
     ttl_value: new ttl value (5-255) (int)
-    perc: percentage of traffic to change the TTL/ECN (0-100) (int)
+    perc_11: percentage of ECN 11 traffic required (0-100) (int)
+    perc_10: percentage of ECN 10 traffic required (0-100) (int)
+    perc_10: percentage of ECN 01 traffic required (0-100) (int)
     ecn_enabled: Rewrite ECN IP hdr bits (int)
     filter_mode:Behaviour is consistent on 0: Flow Affinity, 1: Source IP Affinity (int)
 
@@ -39,13 +38,9 @@ specify a ttl_value to use this as the TTL; the debug_enabled argument enables d
 
    # insmod ttl.ko debug_enabled=1 ttl_value=40
 
-specify a perc value to alter the amount of traffic to apply the new TTL to; ie 25%:
+modify ECN based on Source IP Affinity on with ECN 11, 10, 01 on 20% of the traffic.  ECN 00 will be the remainder (40%)
 
-   # insmod ttl.ko perc=25 ttl_value=40
-
-modify ECN based on Source IP Affinity on 20% of the traffic
-
-   # insmod ttl.ko perc=20 ecn_enabled=1 filter_mode=1
+   # insmod ttl.ko perc11=20 perc10=20 perc01=20 ecn_enabled=1 filter_mode=1
 
 
 # License
