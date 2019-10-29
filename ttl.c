@@ -162,9 +162,9 @@ int matches_value(uint32_t match_val, int perc11, int perc10, int perc01) {
     if (perc11 && (match_val % (int)100/(perc11)) == 0)
         return ECN_CE;
     else if (perc10 && (match_val % (int)(100-perc11)/perc10) == 0)
-        return ECN_ECT_1;
-    else if (perc01 && (match_val % (int)(100-perc11-perc10)/perc01) == 0)
         return ECN_ECT_0;
+    else if (perc01 && (match_val % (int)(100-perc11-perc10)/perc01) == 0)
+        return ECN_ECT_1;
     else
         return ECN_NOT_ECT;
 
